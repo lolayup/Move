@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">move</string>
+
+    <string name="location_button_permission_needed">Enable location</string>
+    <string name="location_button_waiting">Waiting for GPS fix</string>
+    <string name="location_button_tracking">Center on my location</string>
+
+    <string name="zoom_in">Zoom in</string>
+    <string name="zoom_out">Zoom out</string>
+</resources>

@@ -1,0 +1,11 @@
+<resources>
+    <!-- Fixed dark theme (not DayNight): the app defaults to the AMOLED
+         look regardless of system light/dark setting (see ThemeMode.DARK
+         in MainViewModel), so the pre-Compose window background matches
+         that instead of flashing white on cold start. -->
+    <style name="Theme.Move" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF000000</item>
+        <item name="android:statusBarColor">#FF000000</item>
+        <item name="android:navigationBarColor">#FF000000</item>
+    </style>
+</resources>
