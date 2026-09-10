@@ -31,6 +31,7 @@ import com.khaled.move.ui.mapscreen.MapScreenOverlays
 import com.khaled.move.ui.mapscreen.NavigationRouteLayer
 import com.khaled.move.ui.mapscreen.UserLocationLayer
 import com.khaled.move.ui.mapscreen.MetroLineLayer
+import com.khaled.move.ui.mapscreen.MetroStationsLayer
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
@@ -70,6 +71,7 @@ fun MapScreen(
     val activeProfile by viewModel.activeProfile.collectAsStateWithLifecycle()
     val selectedMetroLine by viewModel.selectedMetroLine.collectAsStateWithLifecycle()
     val metroNavigationState by viewModel.metroNavigationState.collectAsStateWithLifecycle()
+    val showMetroStations by viewModel.showMetroStations.collectAsStateWithLifecycle()
 
     val isNavigating = if (activeProfile == NavigationProfile.METRO) {
         metroNavigationState.status != NavigationStatus.Idle
@@ -183,6 +185,7 @@ fun MapScreen(
             }
         ) {
             UserLocationLayer(
+                viewModel = viewModel,
                 location = currentLoc,
                 navigationState = navigationState,
                 metroNavigationState = metroNavigationState,
@@ -195,6 +198,10 @@ fun MapScreen(
             DestinationMarkerLayer(selectedDestination = selectedDestination)
 
             MetroLineLayer(selectedLine = selectedMetroLine)
+
+            if (showMetroStations) {
+                MetroStationsLayer(viewModel = viewModel)
+            }
         }
 
         MapScreenOverlays(

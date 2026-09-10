@@ -24,6 +24,14 @@ import com.khaled.move.ui.components.LocationButton
 import com.khaled.move.ui.components.LocationButtonState
 import com.khaled.move.navigation.foot.location.NavigationLocation
 import com.khaled.move.navigation.metro.engine.MetroNavigationUiState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Subway
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.CoroutineScope
 
 @Composable
@@ -41,7 +49,24 @@ fun MapScreenOverlays(
     sampleDestinations: List<DestinationOption>,
     scope: CoroutineScope
 ) {
+    val showMetroStations by viewModel.showMetroStations.collectAsStateWithLifecycle()
+
     Box(modifier = Modifier.fillMaxSize()) {
+        // Metro toggle button
+        FilledIconButton(
+            onClick = { viewModel.toggleMetroStations() },
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = if (showMetroStations) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = if (showMetroStations) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurfaceVariant
+            ),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 110.dp, end = 16.dp)
+                .padding(mapInsets.asPaddingValues())
+        ) {
+            Icon(Icons.Default.Subway, contentDescription = "Toggle Metro Stations")
+        }
+
         // Location button - only show when not navigating
         if (!isNavigating) {
             LocationButton(
@@ -116,11 +141,33 @@ fun MapScreenOverlays(
 
         if (isNavigating) {
             if (activeProfile == NavigationProfile.METRO) {
+                MetroNavigationTopBanner(
+                    state = metroNavigationState,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(mapInsets.asPaddingValues())
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                )
+
                 NavigationBottomBar(
-                    state = navigationState.copy(
+                    state = NavigationUiState(
+                        status = metroNavigationState.status,
                         followUser = metroNavigationState.followUser,
                         elapsedTimeSeconds = metroNavigationState.elapsedTimeSeconds,
-                        speedMetersPerSecond = 10.0
+                        speedMetersPerSecond = 10.0, // Metro average speed
+                        progress = com.khaled.move.navigation.foot.route.RouteProgress(
+                            totalRouteDistanceMeters = 0.0,
+                            traveledDistanceMeters = 0.0,
+                            remainingDistanceMeters = metroNavigationState.remainingDistanceMeters,
+                            progressFraction = metroNavigationState.progressFraction,
+                            currentRouteSegmentIndex = 0,
+                            snappedLocation = metroNavigationState.currentStation?.point ?: RoutePoint(0.0, 0.0),
+                            currentInstruction = null,
+                            nextInstruction = null,
+                            distanceToNextInstructionMeters = 0.0,
+                            estimatedRemainingDurationSeconds = metroNavigationState.estimatedRemainingDurationSeconds,
+                            estimatedArrivalTime = metroNavigationState.estimatedArrivalTime ?: java.time.Instant.now()
+                        )
                     ),
                     onEndNavigation = { viewModel.stopMetroNavigation() },
                     onToggleFollow = { viewModel.toggleFollowUser() },

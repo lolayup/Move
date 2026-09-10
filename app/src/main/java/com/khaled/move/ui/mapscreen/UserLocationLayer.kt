@@ -8,6 +8,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.material.icons.filled.Subway
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.khaled.move.MainViewModel
 import com.khaled.move.NavigationProfile
 import com.khaled.move.navigation.foot.engine.NavigationUiState
 import com.khaled.move.navigation.foot.location.NavigationLocation
@@ -30,6 +32,7 @@ import kotlinx.serialization.json.JsonObject
 @Composable
 @MaplibreComposable
 fun UserLocationLayer(
+    viewModel: MainViewModel,
     location: NavigationLocation?,
     navigationState: NavigationUiState,
     metroNavigationState: MetroNavigationUiState,
@@ -37,6 +40,8 @@ fun UserLocationLayer(
     isNavigating: Boolean
 ) {
     if (location == null) return
+
+    val isAtMetroStation by viewModel.isAtMetroStation.collectAsStateWithLifecycle()
 
     val userLocationSource = rememberGeoJsonSource(
         data = GeoJsonData.Features(
@@ -56,7 +61,7 @@ fun UserLocationLayer(
         )
     )
 
-    val icon = if (activeProfile == NavigationProfile.METRO) {
+    val icon = if (activeProfile == NavigationProfile.METRO || isAtMetroStation) {
         Icons.Default.Subway
     } else {
         Icons.AutoMirrored.Filled.DirectionsWalk

@@ -1,12 +1,15 @@
 package com.khaled.move.navigation.foot.engine
 
 import android.util.Log
+import com.khaled.move.navigation.NativeNavigationEngine
+import com.khaled.move.navigation.NativeNavigationResult
 import com.khaled.move.navigation.foot.speed.MovementState
 import com.khaled.move.navigation.foot.location.NavigationLocation
 import com.khaled.move.navigation.foot.route.NavigationRoute
 import com.khaled.move.navigation.foot.engine.NavigationStatus
 import com.khaled.move.navigation.foot.engine.NavigationUiState
 import com.khaled.move.navigation.foot.route.RoutePoint
+import com.khaled.move.navigation.foot.route.RouteProgress
 import com.khaled.move.navigation.foot.camera.NavigationBearingSmoother
 import com.khaled.move.navigation.foot.eta.EtaCalculator
 import com.khaled.move.navigation.foot.location.NavigationLocationFilter
@@ -18,6 +21,7 @@ import com.khaled.move.navigation.foot.route.RouteProgressSnapshot
 import com.khaled.move.navigation.foot.route.WalkingRoutingRepository
 import com.khaled.move.navigation.foot.speed.SpeedEstimate
 import com.khaled.move.navigation.foot.speed.WalkingSpeedEstimator
+import java.time.Instant
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +39,7 @@ import kotlinx.coroutines.launch
 
 class WalkingNavigationEngine(
     private val routingRepository: WalkingRoutingRepository,
+    private val nativeEngine: NativeNavigationEngine,
     private val routeProgressCalculator: RouteProgressCalculator = RouteProgressCalculator(EtaCalculator()),
     private val speedEstimator: WalkingSpeedEstimator = WalkingSpeedEstimator(),
     private val offRouteDetector: OffRouteDetector = OffRouteDetector(),
@@ -77,6 +82,8 @@ class WalkingNavigationEngine(
         bearingSmoother.reset()
         speedEstimator.reset()
         offRouteDetector.reset()
+        nativeEngine.stop()
+        
         _state.value = _state.value.copy(
             status = NavigationStatus.Preparing,
             isRecalculating = true,
@@ -129,6 +136,7 @@ class WalkingNavigationEngine(
         bearingSmoother.reset()
         speedEstimator.reset()
         offRouteDetector.reset()
+        nativeEngine.stop()
         _state.value = NavigationUiState()
     }
 
@@ -156,29 +164,32 @@ class WalkingNavigationEngine(
             offRouteDetector.reset()
             routeProgressCalculator.reset()
             bearingSmoother.reset()
-            val speedEstimate = speedEstimator.onLocation(location)
-            val progressSnapshot =
-                routeProgressCalculator.calculate(route, location, speedEstimate.speedMetersPerSecond)
-            val navigationPoint = navigationPoint(progressSnapshot, location)
+            
+            nativeEngine.start(route, location)
+            val nativeResult = nativeEngine.process(location)
+            
+            val progress = mapNativeProgress(nativeResult, route)
+            
             val bearing = bearingSmoother.update(
-                snappedPoint = progressSnapshot.progress.snappedLocation,
-                routeBearingDegrees = progressSnapshot.routeBearingDegrees,
+                snappedPoint = RoutePoint(nativeResult.snappedLatitude, nativeResult.snappedLongitude),
+                routeBearingDegrees = nativeResult.navigationBearingDegrees,
                 gpsBearingDegrees = location.bearingDegrees,
-                movementState = speedEstimate.movementState,
+                movementState = MovementState.entries[nativeResult.movementState],
                 timestampMillis = location.timestampMillis,
             )
+            
             _state.update {
                 NavigationUiState(
-                    status = if (speedEstimate.movementState == MovementState.Stationary) NavigationStatus.Stationary else NavigationStatus.Navigating,
-                    movementState = speedEstimate.movementState,
+                    status = NavigationStatus.entries[nativeResult.status],
+                    movementState = MovementState.entries[nativeResult.movementState],
                     route = route,
-                    progress = progressSnapshot.progress,
-                    speedMetersPerSecond = speedEstimate.speedMetersPerSecond,
-                    elapsedTimeSeconds = calculateElapsedTime(),
+                    progress = progress,
+                    speedMetersPerSecond = nativeResult.speedMetersPerSecond,
+                    elapsedTimeSeconds = nativeResult.elapsedTimeSeconds,
                     rawLocation = location,
                     filteredLocation = location,
-                    snappedLocation = progressSnapshot.progress.snappedLocation,
-                    navigationLocation = navigationPoint,
+                    snappedLocation = RoutePoint(nativeResult.snappedLatitude, nativeResult.snappedLongitude),
+                    navigationLocation = RoutePoint(nativeResult.navigationLatitude, nativeResult.navigationLongitude),
                     navigationBearingDegrees = bearing,
                     followUser = true,
                     isRecalculating = false,
@@ -207,38 +218,30 @@ class WalkingNavigationEngine(
         rawLocation: NavigationLocation,
         filteredLocation: NavigationLocation,
     ) {
-        val speedEstimate = speedEstimator.onLocation(filteredLocation)
-        val progressSnapshot =
-            routeProgressCalculator.calculate(route, filteredLocation, speedEstimate.speedMetersPerSecond)
-        val navigationPoint = navigationPoint(progressSnapshot, filteredLocation)
+        val nativeResult = nativeEngine.process(filteredLocation)
+        val progress = mapNativeProgress(nativeResult, route)
+        
         val bearing = bearingSmoother.update(
-            snappedPoint = progressSnapshot.progress.snappedLocation,
-            routeBearingDegrees = progressSnapshot.routeBearingDegrees,
+            snappedPoint = RoutePoint(nativeResult.snappedLatitude, nativeResult.snappedLongitude),
+            routeBearingDegrees = nativeResult.navigationBearingDegrees,
             gpsBearingDegrees = filteredLocation.bearingDegrees,
-            movementState = speedEstimate.movementState,
+            movementState = MovementState.entries[nativeResult.movementState],
             timestampMillis = filteredLocation.timestampMillis,
         )
-        if (isArrived(route, filteredLocation, progressSnapshot)) {
-            arrivalConfirmationSamples += 1
-        } else {
-            arrivalConfirmationSamples = 0
-        }
-        if (arrivalConfirmationSamples >= ARRIVAL_CONFIRMATION_SAMPLES) {
+        
+        if (nativeResult.status == NavigationStatus.Arrived.ordinal) {
             _state.update {
                 it.copy(
                     status = NavigationStatus.Arrived,
-                    movementState = speedEstimate.movementState,
+                    movementState = MovementState.entries[nativeResult.movementState],
                     route = route,
-                    progress = progressSnapshot.progress.copy(
-                        remainingDistanceMeters = 0.0,
-                        estimatedRemainingDurationSeconds = 0.0,
-                    ),
-                    speedMetersPerSecond = speedEstimate.speedMetersPerSecond,
-                    elapsedTimeSeconds = calculateElapsedTime(),
+                    progress = progress,
+                    speedMetersPerSecond = nativeResult.speedMetersPerSecond,
+                    elapsedTimeSeconds = nativeResult.elapsedTimeSeconds,
                     rawLocation = rawLocation,
                     filteredLocation = filteredLocation,
-                    snappedLocation = progressSnapshot.progress.snappedLocation,
-                    navigationLocation = navigationPoint,
+                    snappedLocation = RoutePoint(nativeResult.snappedLatitude, nativeResult.snappedLongitude),
+                    navigationLocation = RoutePoint(nativeResult.navigationLatitude, nativeResult.navigationLongitude),
                     navigationBearingDegrees = bearing,
                     isRecalculating = false,
                     errorMessage = null,
@@ -247,15 +250,21 @@ class WalkingNavigationEngine(
             return
         }
 
+        // Distance from route for off-route detection
+        val distFromRoute = GeoUtils.distanceMeters(
+            RoutePoint(filteredLocation.latitude, filteredLocation.longitude),
+            RoutePoint(nativeResult.snappedLatitude, nativeResult.snappedLongitude)
+        )
+
         val offRouteResult = offRouteDetector.evaluate(
             location = filteredLocation,
-            distanceFromRouteMeters = progressSnapshot.distanceFromRouteMeters,
-            routeBearingDegrees = progressSnapshot.routeBearingDegrees,
-            movementState = speedEstimate.movementState,
+            distanceFromRouteMeters = distFromRoute,
+            routeBearingDegrees = nativeResult.navigationBearingDegrees,
+            movementState = MovementState.entries[nativeResult.movementState],
         )
 
         if (offRouteResult.offRoute && !isRerouting) {
-            reroute(sessionId, route, filteredLocation, speedEstimate, progressSnapshot, navigationPoint, bearing)
+            reroute(sessionId, route, filteredLocation, nativeResult, progress, bearing)
             return
         }
 
@@ -263,18 +272,18 @@ class WalkingNavigationEngine(
             it.copy(
                 status = when {
                     isRerouting -> NavigationStatus.Rerouting
-                    speedEstimate.movementState == MovementState.Stationary -> NavigationStatus.Stationary
+                    MovementState.entries[nativeResult.movementState] == MovementState.Stationary -> NavigationStatus.Stationary
                     else -> NavigationStatus.Navigating
                 },
-                movementState = speedEstimate.movementState,
+                movementState = MovementState.entries[nativeResult.movementState],
                 route = route,
-                progress = progressSnapshot.progress,
-                speedMetersPerSecond = speedEstimate.speedMetersPerSecond,
-                elapsedTimeSeconds = calculateElapsedTime(),
+                progress = progress,
+                speedMetersPerSecond = nativeResult.speedMetersPerSecond,
+                elapsedTimeSeconds = nativeResult.elapsedTimeSeconds,
                 rawLocation = rawLocation,
                 filteredLocation = filteredLocation,
-                snappedLocation = progressSnapshot.progress.snappedLocation,
-                navigationLocation = navigationPoint,
+                snappedLocation = RoutePoint(nativeResult.snappedLatitude, nativeResult.snappedLongitude),
+                navigationLocation = RoutePoint(nativeResult.navigationLatitude, nativeResult.navigationLongitude),
                 navigationBearingDegrees = bearing,
                 isRecalculating = isRerouting,
                 errorMessage = null,
@@ -286,25 +295,26 @@ class WalkingNavigationEngine(
         sessionId: Long,
         currentRoute: NavigationRoute,
         location: NavigationLocation,
-        speedEstimate: SpeedEstimate,
-        progressSnapshot: RouteProgressSnapshot,
-        navigationPoint: RoutePoint,
+        nativeResult: NativeNavigationResult,
+        progress: RouteProgress,
         bearing: Double?,
     ) {
         val destination = destination ?: currentRoute.destination
         isRerouting = true
+        nativeEngine.setRerouting(true)
+        
         _state.update {
             it.copy(
                 status = NavigationStatus.Rerouting,
-                movementState = speedEstimate.movementState,
+                movementState = MovementState.entries[nativeResult.movementState],
                 route = currentRoute,
-                progress = progressSnapshot.progress,
-                speedMetersPerSecond = speedEstimate.speedMetersPerSecond,
-                elapsedTimeSeconds = calculateElapsedTime(),
+                progress = progress,
+                speedMetersPerSecond = nativeResult.speedMetersPerSecond,
+                elapsedTimeSeconds = nativeResult.elapsedTimeSeconds,
                 rawLocation = location,
                 filteredLocation = location,
-                snappedLocation = progressSnapshot.progress.snappedLocation,
-                navigationLocation = navigationPoint,
+                snappedLocation = RoutePoint(nativeResult.snappedLatitude, nativeResult.snappedLongitude),
+                navigationLocation = RoutePoint(nativeResult.navigationLatitude, nativeResult.navigationLongitude),
                 navigationBearingDegrees = bearing,
                 isRecalculating = true,
             )
@@ -314,28 +324,27 @@ class WalkingNavigationEngine(
                 if (sessionId != navigationSessionId) return
                 activeRoute = newRoute
                 isRerouting = false
-                arrivalConfirmationSamples = 0
-                offRouteDetector.reset()
-                routeProgressCalculator.reset()
-                bearingSmoother.reset()
-                val reroutedProgress =
-                    routeProgressCalculator.calculate(newRoute, location, speedEstimate.speedMetersPerSecond)
-                val reroutedPoint = navigationPoint(reroutedProgress, location)
+                nativeEngine.setRerouting(false)
+                
+                nativeEngine.start(newRoute, location)
+                val reroutedNative = nativeEngine.process(location)
+                val reroutedProgress = mapNativeProgress(reroutedNative, newRoute)
+                
                 val reroutedBearing = bearingSmoother.update(
-                    snappedPoint = reroutedProgress.progress.snappedLocation,
-                    routeBearingDegrees = reroutedProgress.routeBearingDegrees,
+                    snappedPoint = RoutePoint(reroutedNative.snappedLatitude, reroutedNative.snappedLongitude),
+                    routeBearingDegrees = reroutedNative.navigationBearingDegrees,
                     gpsBearingDegrees = location.bearingDegrees,
-                    movementState = speedEstimate.movementState,
+                    movementState = MovementState.entries[reroutedNative.movementState],
                     timestampMillis = location.timestampMillis,
                 )
                 _state.update {
                     it.copy(
                         status = NavigationStatus.Navigating,
                         route = newRoute,
-                        progress = reroutedProgress.progress,
-                        elapsedTimeSeconds = calculateElapsedTime(),
-                        snappedLocation = reroutedProgress.progress.snappedLocation,
-                        navigationLocation = reroutedPoint,
+                        progress = reroutedProgress,
+                        elapsedTimeSeconds = reroutedNative.elapsedTimeSeconds,
+                        snappedLocation = RoutePoint(reroutedNative.snappedLatitude, reroutedNative.snappedLongitude),
+                        navigationLocation = RoutePoint(reroutedNative.navigationLatitude, reroutedNative.navigationLongitude),
                         navigationBearingDegrees = reroutedBearing,
                         isRecalculating = false,
                         errorMessage = null,
@@ -345,6 +354,7 @@ class WalkingNavigationEngine(
             .onFailure { error ->
                 if (sessionId != navigationSessionId) return
                 isRerouting = false
+                nativeEngine.setRerouting(false)
                 _state.update {
                     it.copy(
                         status = NavigationStatus.Navigating,
@@ -356,37 +366,28 @@ class WalkingNavigationEngine(
             }
     }
 
+    private fun mapNativeProgress(native: NativeNavigationResult, route: NavigationRoute): RouteProgress {
+        val currentInst = route.instructions.getOrNull(native.currentInstructionIndex)
+        val nextInstruction = route.instructions.getOrNull(native.nextInstructionIndex)
+
+        return RouteProgress(
+            totalRouteDistanceMeters = route.distanceMeters,
+            traveledDistanceMeters = native.traveledDistanceMeters,
+            remainingDistanceMeters = native.remainingDistanceMeters,
+            progressFraction = native.progressFraction,
+            currentRouteSegmentIndex = native.currentRouteSegmentIndex,
+            snappedLocation = RoutePoint(native.snappedLatitude, native.snappedLongitude),
+            currentInstruction = currentInst,
+            nextInstruction = nextInstruction,
+            distanceToNextInstructionMeters = native.distanceToNextInstructionMeters,
+            estimatedRemainingDurationSeconds = native.estimatedRemainingDurationSeconds,
+            estimatedArrivalTime = Instant.ofEpochMilli(native.estimatedArrivalTimeMillis),
+        )
+    }
+
     private fun calculateElapsedTime(): Long {
         val start = navigationStartTimeMillis ?: return 0L
         return (System.currentTimeMillis() - start) / 1000L
     }
-
-    private fun navigationPoint(snapshot: RouteProgressSnapshot, location: NavigationLocation): RoutePoint {
-        val rawPoint = RoutePoint(location.latitude, location.longitude)
-        val accuracy = (location.accuracyMeters ?: 12f).toDouble()
-        val snapThreshold = (accuracy + 14.0).coerceAtMost(42.0)
-        return if (snapshot.distanceFromRouteMeters <= snapThreshold) {
-            snapshot.progress.snappedLocation
-        } else {
-            rawPoint
-        }
-    }
-
-    private fun isArrived(
-        route: NavigationRoute,
-        location: NavigationLocation,
-        progressSnapshot: RouteProgressSnapshot,
-    ): Boolean {
-        val locationPoint = RoutePoint(location.latitude, location.longitude)
-        val distanceToDestination = GeoUtils.distanceMeters(locationPoint, route.destination)
-        val accuracy = (location.accuracyMeters ?: 12f).toDouble()
-        return progressSnapshot.progress.remainingDistanceMeters <= ARRIVAL_ROUTE_DISTANCE_METERS ||
-                distanceToDestination <= (accuracy + ARRIVAL_DESTINATION_DISTANCE_METERS)
-    }
-
-    private companion object {
-        const val ARRIVAL_ROUTE_DISTANCE_METERS = 16.0
-        const val ARRIVAL_DESTINATION_DISTANCE_METERS = 10.0
-        const val ARRIVAL_CONFIRMATION_SAMPLES = 2
-    }
 }
+

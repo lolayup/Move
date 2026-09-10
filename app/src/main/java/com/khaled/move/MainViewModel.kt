@@ -51,16 +51,25 @@ class MainViewModel : ViewModel() {
     private val _selectedMetroLine = MutableStateFlow<MetroLine?>(null)
     val selectedMetroLine: StateFlow<MetroLine?> = _selectedMetroLine.asStateFlow()
 
+    private val _showMetroStations = MutableStateFlow(false)
+    val showMetroStations: StateFlow<Boolean> = _showMetroStations.asStateFlow()
+
     private val locationTracker = MapLibreLocationTracker()
     
+    private val nativeEngine = com.khaled.move.navigation.NativeNavigationEngine()
+
     private val footNavigationEngine = WalkingNavigationEngine(
         routingRepository = ValhallaWalkingRoutingRepository(),
+        nativeEngine = nativeEngine,
         scope = viewModelScope,
     )
 
     private val metroNavigationEngine = MetroNavigationEngine(
         scope = viewModelScope
     )
+
+    private val _isAtMetroStation = MutableStateFlow(false)
+    val isAtMetroStation: StateFlow<Boolean> = _isAtMetroStation.asStateFlow()
 
     val footNavigationState: StateFlow<NavigationUiState> = footNavigationEngine.state
         .stateIn(
@@ -85,23 +94,37 @@ class MainViewModel : ViewModel() {
         else footNavigationState.value.followUser
 
     init {
+        // Initialize Metro Data in Native Engine
+        CairoMetroRepository.getAllStations().forEach {
+            nativeEngine.addStation(it.id, it.name, it.latitude, it.longitude, it.lines)
+        }
+        CairoMetroRepository.getAllLines().forEach {
+            nativeEngine.addLine(it.id, it.name, it.colorHex, it.stations)
+        }
+
         // Automatic profile switching logic
         viewModelScope.launch {
             _location.collect { state ->
                 val loc = state.location ?: return@collect
-                val nearbyStation = CairoMetroRepository.findNearbyStation(RoutePoint(loc.latitude, loc.longitude))
-                
-                if (nearbyStation != null && _activeProfile.value == NavigationProfile.FOOT) {
+                val nearbyStationId = nativeEngine.findNearbyStation(loc.latitude, loc.longitude)
+                val isAtStation = nativeEngine.isAtStation(loc.latitude, loc.longitude)
+                _isAtMetroStation.value = isAtStation
+
+                if (nearbyStationId != null && _activeProfile.value == NavigationProfile.FOOT) {
                     if (footNavigationState.value.status == NavigationStatus.Idle) {
                         _activeProfile.value = NavigationProfile.METRO
                     }
-                } else if (nearbyStation == null && _activeProfile.value == NavigationProfile.METRO) {
+                } else if (nearbyStationId == null && _activeProfile.value == NavigationProfile.METRO) {
                     if (metroNavigationState.value.status == NavigationStatus.Idle) {
                         _activeProfile.value = NavigationProfile.FOOT
                     }
                 }
             }
         }
+    }
+
+    fun toggleMetroStations() {
+        _showMetroStations.value = !_showMetroStations.value
     }
 
     fun setThemeMode(mode: ThemeMode) {
